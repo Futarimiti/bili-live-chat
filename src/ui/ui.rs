@@ -21,7 +21,7 @@ use unicode_width::UnicodeWidthStr;
 enum InputMode {
     #[default]
     Normal,
-    Editing,
+    Insert,
 }
 
 #[derive(Debug)]
@@ -106,8 +106,8 @@ impl<B: Backend + std::io::Write> UI<B> {
                 if let Event::Key(key) = event::read()? {
                     match self.ui_state.input_mode {
                         InputMode::Normal => match key.code {
-                            KeyCode::Char('e') => {
-                                self.ui_state.input_mode = InputMode::Editing;
+                            KeyCode::Char('i') => {
+                                self.ui_state.input_mode = InputMode::Insert;
                             }
                             KeyCode::Char('q') => {
                                 /* restore terminal */
@@ -120,7 +120,7 @@ impl<B: Backend + std::io::Write> UI<B> {
                             }
                             _ => {}
                         },
-                        InputMode::Editing => match key.code {
+                        InputMode::Insert => match key.code {
                             KeyCode::Esc => {
                                 self.ui_state.input_mode = InputMode::Normal;
                             }
@@ -206,7 +206,7 @@ fn draw_chat_room<B: Backend>(f: &mut Frame<B>, us: &mut UiState, area: Rect) {
     f.render_widget(input_box, chunks[1]);
     match us.input_mode {
         InputMode::Normal => {}
-        InputMode::Editing => {
+        InputMode::Insert => {
             let len = UnicodeWidthStr::width(us.input_buf.as_str());
             f.set_cursor(chunks[1].x + len as u16 + 1, chunks[1].y + 1);
         }
