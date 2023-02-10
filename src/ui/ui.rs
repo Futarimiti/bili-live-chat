@@ -1,6 +1,6 @@
 use std::{collections::HashMap, process::exit, sync::Arc, time::Duration};
 
-use crate::{api::live::LiveRoom, config::Config, Credential, Message, MessageKind};
+use crate::{api::live::LiveRoom, config::Config, Message, MessageKind};
 use crossterm::{
     event::{self, DisableMouseCapture, Event, KeyCode},
     execute,
@@ -24,6 +24,7 @@ enum InputMode {
     Insert,
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct UI<B: Backend + std::io::Write> {
     ui_state: UiState,
@@ -32,12 +33,12 @@ pub struct UI<B: Backend + std::io::Write> {
     config: Arc<Mutex<Config>>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Default)]
 struct UiState {
     /* Channal Receiver */
     msg_rx: Option<Receiver<Message>>,
     rm_info_rx: Option<Receiver<HashMap<String, String>>>,
+    rank_info_rx: Option<Receiver<Vec<String>>>,
 
     /* Tab 1: Chat Room */
     input_mode: InputMode,
@@ -46,9 +47,11 @@ struct UiState {
     chat_history: Vec<Message>,
 
     /* Tab 2: Rank Info */
+    rank_info: Option<Vec<String>>,
+    gift_history: Vec<Message>,
 
     /* Tab 3: Room Info */
-    uid: String,
+    ruid: String,
     room_id: String,
     title: String,
     tags: String,
@@ -59,6 +62,7 @@ struct UiState {
     watched_show: i64,
     attention: i64,
     uname: String,
+    total_likes: i64,
 }
 
 impl<B: Backend + std::io::Write> UI<B> {
@@ -66,12 +70,14 @@ impl<B: Backend + std::io::Write> UI<B> {
         term: Terminal<B>,
         msg_rx: Receiver<Message>,
         rm_info_rx: Receiver<HashMap<String, String>>,
+        rank_info_rx: Receiver<Vec<String>>,
         room_id: i64,
         config: Arc<Mutex<Config>>,
     ) -> Self {
         let state = UiState {
             msg_rx: Some(msg_rx),
             rm_info_rx: Some(rm_info_rx),
+            rank_info_rx: Some(rank_info_rx),
             ..Default::default()
         };
 
@@ -98,11 +104,15 @@ impl<B: Backend + std::io::Write> UI<B> {
         }
 
         loop {
-            // When the length of chat_history is greater than or equal to 100,
+            // When the length of chat_history and gift_history is greater than or equal to 100,
             // clear up the first 50 chats to ensure that the length of chat_history
             // is not too long.
             if self.ui_state.chat_history.len() >= 100 {
                 self.ui_state.chat_history.drain(0..50);
+            }
+
+            if self.ui_state.gift_history.len() >= 100 {
+                self.ui_state.gift_history.drain(0..50);
             }
 
             /* Draw UI */
@@ -117,13 +127,17 @@ impl<B: Backend + std::io::Write> UI<B> {
                     MessageKind::DANMU_MSG => {
                         self.ui_state.chat_history.push(msg);
                     }
+                    MessageKind::SEND_GIFT => {
+                        self.ui_state.gift_history.push(msg);
+                    }
                     _ => {}
                 }
             }
 
             /* Sync Room Info */
             if let Ok(ri) = self.ui_state.rm_info_rx.as_mut().unwrap().try_recv() {
-                self.ui_state.uid = ri["uid"].clone();
+                /* Room Info */
+                self.ui_state.ruid = ri["ruid"].clone();
                 self.ui_state.room_id = ri["room_id"].clone();
                 self.ui_state.title = ri["title"].clone();
                 self.ui_state.tags = ri["tags"].clone();
@@ -134,6 +148,12 @@ impl<B: Backend + std::io::Write> UI<B> {
                 self.ui_state.watched_show = ri["watched_show"].parse().unwrap();
                 self.ui_state.attention = ri["attention"].parse().unwrap();
                 self.ui_state.uname = ri["uname"].clone();
+                self.ui_state.total_likes = ri["total_likes"].parse().unwrap();
+            }
+
+            /* Sync The First 50 Of Rank Info */
+            if let Ok(rf50) = self.ui_state.rank_info_rx.as_mut().unwrap().try_recv() {
+                self.ui_state.rank_info = Some(rf50);
             }
 
             /* Poll Keyboard Events */
@@ -205,7 +225,17 @@ fn draw_ui<B: Backend>(f: &mut Frame<B>, us: &mut UiState) {
     ];
     let tabs_title = tabs_title
         .iter()
-        .map(|item| Spans::from(Span::from(item.as_str())))
+        .enumerate()
+        .map(|(index, item)| {
+            if index == us.tab_selected {
+                Spans::from(Span::styled(
+                    item.as_str(),
+                    Style::default().fg(Color::Blue),
+                ))
+            } else {
+                Spans::from(Span::from(item.as_str()))
+            }
+        })
         .collect();
     let tabs = Tabs::new(tabs_title).select(us.tab_selected);
     f.render_widget(tabs, chunks[0]);
@@ -253,14 +283,74 @@ fn draw_chat_room<B: Backend>(f: &mut Frame<B>, us: &mut UiState, area: Rect) {
 
 fn draw_rank_info<B: Backend>(f: &mut Frame<B>, us: &mut UiState, area: Rect) {
     let chunks = Layout::default()
-        .constraints([Constraint::Min(0), Constraint::Length(3)].as_ref())
+        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)].as_ref())
+        .direction(tui::layout::Direction::Horizontal)
         .split(area);
-    // TODO
+
+    /* rank info */
+    let rank_info_items = {
+        if let Some(ref data) = us.rank_info {
+            Some(
+                // format: name,guard_level,score
+                data.iter()
+                    .map(|i| i.split(',').collect::<Vec<_>>())
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            None
+        }
+    };
+    let mut list_items = vec![];
+    if let Some(data) = rank_info_items {
+        for (k, v) in data.iter().enumerate() {
+            let rank;
+            if k < 3 {
+                rank = Span::styled((k + 1).to_string() + ": ", Style::default().fg(Color::Red));
+            } else {
+                rank = Span::raw((k + 1).to_string() + ": ");
+            }
+            let spans = Spans::from(vec![
+                rank,
+                Span::styled(v[0].to_owned() + " ", Style::default().fg(Color::Cyan)),
+                Span::styled(v[2].to_owned(), Style::default().fg(Color::Blue)),
+            ]);
+            list_items.push(ListItem::new(Text::from(spans)));
+        }
+    } else {
+        list_items.push(ListItem::new(Text::from("Here is not anyone.")));
+    }
+
+    let rank_info_list =
+        List::new(list_items).block(Block::default().borders(Borders::ALL).title("Rank"));
+    f.render_widget(rank_info_list, chunks[0]);
+
+    /* gift */
+    let mut gift_items = us
+        .gift_history
+        .iter()
+        .map(|v| {
+            let datetime = v.date.format("[%H:%M]").to_string();
+            let gift_ctnt = Spans::from(vec![
+                Span::raw(datetime),
+                Span::styled(
+                    " ".to_owned() + v.author.as_str() + " ",
+                    Style::default().fg(Color::Blue),
+                ),
+                Span::styled(v.content.clone(), Style::default().fg(Color::Green)),
+            ]);
+            ListItem::new(gift_ctnt)
+        })
+        .collect::<Vec<_>>();
+    gift_items.reverse();
+    let gift_list = List::new(gift_items)
+        .block(Block::default().borders(Borders::ALL).title("Gift"))
+        .start_corner(tui::layout::Corner::BottomLeft);
+    f.render_widget(gift_list, chunks[1]);
 }
 
 fn draw_room_info<B: Backend>(f: &mut Frame<B>, us: &mut UiState, area: Rect) {
     let chunks = Layout::default()
-        .constraints([Constraint::Min(0), Constraint::Length(5)].as_ref())
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
         .split(area);
 
     /* base info */
@@ -301,6 +391,10 @@ fn draw_room_info<B: Backend>(f: &mut Frame<B>, us: &mut UiState, area: Rect) {
                 crate::utils::display_duration(duration),
                 Style::default().fg(Color::Red),
             ),
+        ]),
+        Spans::from(vec![
+            Span::raw("Total likes: "),
+            Span::styled(us.total_likes.to_string(), Style::default().fg(Color::Red)),
         ]),
         Spans::from(vec![
             Span::raw("Attention: "),

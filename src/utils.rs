@@ -1,4 +1,4 @@
-use chrono::{self, Datelike, Timelike};
+use chrono;
 use flate2::read::ZlibDecoder;
 use std::io::prelude::*;
 
@@ -75,7 +75,7 @@ pub fn split_packs(data: &[u8]) -> Vec<Vec<u8>> {
     packs
 }
 
-pub fn timestamp_to_datetime(ts: u64) -> chrono::DateTime<chrono::Utc> {
+pub fn timestamp_to_datetime_utc8(ts: u64) -> chrono::DateTime<chrono::Utc> {
     let offset = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
 
     // UTC+8
@@ -99,7 +99,11 @@ pub fn display_duration(duration: chrono::Duration) -> String {
     let hours = duration.num_hours();
     let minutes = duration.num_minutes() - hours * 60;
 
-    format!("{}:{}", hours, minutes)
+    if minutes < 10 {
+        format!("{}:0{}", hours, minutes)
+    } else {
+        format!("{}:{}", hours, minutes)
+    }
 }
 
 #[test]
